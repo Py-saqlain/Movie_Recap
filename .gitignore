@@ -1,0 +1,13 @@
+# --- IGNORE HEAVY VIDEO FILES ---
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# --- IGNORE AUDIO FILES ---
+*.mp3
+*.wav
+
+# --- IGNORE PYTHON SYSTEM FILES ---
+__pycache__/
+*.pyc
