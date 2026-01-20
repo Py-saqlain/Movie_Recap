@@ -3,18 +3,16 @@ from moviepy import VideoFileClip, AudioFileClip, CompositeVideoClip, concatenat
 from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lsa import LsaSummarizer
-from gtts import gTTS
+import pyttsx3  # <--- NEW MALE VOICE ENGINE
 import os
 import math
 import re
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
-# --- SETTINGS ---
-CHUNK_SIZE_MINUTES = 1.5
-SENTENCES_PER_CHUNK = 5   
+# --- GLOBAL SETTINGS ---
 GAP_THRESHOLD = 10 
-MUSIC_VOLUME = 0.40  # INCREASED to 40% so you definitely hear it!
+MUSIC_VOLUME = 0.40  # Keep low to let the deep voice dominate
 
 def clean_text(text):
     return re.sub(r'[^a-zA-Z0-9\s]', '', text).lower().strip()
@@ -49,34 +47,55 @@ def create_subtitle_clip(text, duration, video_w, video_h):
     except:
         return None
 
+def generate_voice(text, filename):
+    # --- NEW: MALE VOICE ENGINE ---
+    try:
+        engine = pyttsx3.init()
+        voices = engine.getProperty('voices')
+        # Windows usually puts Male (David) at index 0
+        engine.setProperty('voice', voices[0].id) 
+        engine.setProperty('rate', 145) # Slower = More Commanding
+        engine.save_to_file(text, filename)
+        engine.runAndWait()
+    except Exception as e:
+        print(f"Voice Error: {e}")
+
 def make_chunked_recap():
-    print("--- STARTING: MUSIC DEBUG MODE ---")
+    print("--- STARTING: LIQUID FLOW MODE (Male Voice + Melting Cuts) ---")
     
-    # --- MUSIC CHECK ---
     music_file = "background.mp3"
-    if os.path.exists(music_file):
-        print(f"\n✅ SUCCESS: Found '{music_file}'!")
-        print("   -> Music WILL be added.")
-    else:
-        print(f"\n❌ ERROR: Could not find '{music_file}'")
-        print("   -> Please check if it is named 'background.mp3.mp3'")
-        # Try to find the double extension error
-        if os.path.exists("background.mp3.mp3"):
-             print("   -> FOUND 'background.mp3.mp3'. Renaming it for you...")
-             os.rename("background.mp3.mp3", "background.mp3")
-             print("   -> Fixed! Restart the code.")
-             return
+    if not os.path.exists(music_file):
+        print(f" WARNING: '{music_file}' not found.")
 
     subs = pysrt.open('movie.srt')
     video = VideoFileClip("movie.mp4")
+    video = video.resized(height=480) # Resize for performance
     W, H = video.size
+
+    # --- AUTO-SCALE LOGIC (Tweaked for "More Speech") ---
+    duration_mins = video.duration / 60
+    print(f"Movie Duration: {duration_mins:.2f} minutes")
+
+    if duration_mins < 30:
+        print(" -> Mode: Short Film")
+        CHUNK_SIZE_MINUTES = 1.0
+        SENTENCES_PER_CHUNK = 4 # Increased for more detail
+    elif duration_mins < 100:
+        print(" -> Mode: Standard Feature")
+        CHUNK_SIZE_MINUTES = 2.5 # Reduced gap to keep story moving
+        SENTENCES_PER_CHUNK = 3  # Increased to 3 lines (Speak More)
+    else:
+        print(" -> Mode: Epic Movie")
+        CHUNK_SIZE_MINUTES = 4.0
+        SENTENCES_PER_CHUNK = 3 # Increased to 3 lines
 
     total_chunks = math.ceil(video.duration / (CHUNK_SIZE_MINUTES * 60))
     final_clips = []
     
     # INTRO
     try:
-        intro_clip = video.subclipped(0, 8).with_effects([vfx.FadeIn(1.0), vfx.FadeOut(0.5)])
+        intro_clip = video.subclipped(0, 8).without_audio()
+        intro_clip = intro_clip.with_effects([vfx.FadeIn(1.0)])
         final_clips.append(intro_clip)
     except: pass
 
@@ -121,13 +140,20 @@ def make_chunked_recap():
                             break
                     
                     if found:
-                        tts = gTTS(text=text_str, lang='en')
                         mp3_name = f"temp_{i}_dial_{len(dialogue_clips_data)}.mp3"
-                        tts.save(mp3_name)
+                        generate_voice(text_str, mp3_name)
+                        
                         audio = AudioFileClip(mp3_name)
-                        clip_end = start_time + audio.duration + 0.3
+                        # Add buffer so audio finishes before cut
+                        clip_end = start_time + audio.duration + 0.5 
                         try:
-                            base_clip = video.subclipped(start_time, clip_end)
+                            # FIX 1: SILENCE THE ORIGINAL VIDEO
+                            base_clip = video.subclipped(start_time, clip_end).without_audio()
+                            
+                            # FIX 2: THE "MELTING" EFFECT
+                            # We add a CrossFadeIn to start smoothly
+                            base_clip = base_clip.with_effects([vfx.CrossFadeIn(0.6)])
+                            
                             base_clip = base_clip.with_audio(audio)
                             sub_clip = create_subtitle_clip(text_str, base_clip.duration, W, H)
                             
@@ -139,11 +165,11 @@ def make_chunked_recap():
 
                             dialogue_clips_data.append({"start": start_time, "end": clip_end, "clip": final_scene_clip})
                             used_sentences.append(ai_sentence_clean)
-                            print(f"   -> Match: {text_str[:20]}...")
+                            print(f"   -> Speaking: {text_str[:25]}...")
                         except: pass
             except: pass
 
-        # 2. VISUALS
+        # 2. VISUALS (The Glue)
         forbidden_ranges = [(d["start"] - 4, d["end"] + 4) for d in dialogue_clips_data]
         offsets = [0.15, 0.50, 0.85]
         for idx, percent in enumerate(offsets):
@@ -158,7 +184,10 @@ def make_chunked_recap():
                     break
             if is_safe:
                 try:
-                    action_clip = video.subclipped(clip_start, clip_end)
+                    # FIX: Silent + Melt
+                    action_clip = video.subclipped(clip_start, clip_end).without_audio()
+                    action_clip = action_clip.with_effects([vfx.CrossFadeIn(0.6)])
+                    
                     visual_clips_data.append({"start": clip_start, "end": clip_end, "clip": action_clip})
                     print(f"     -> Visual Added")
                 except: pass
@@ -170,32 +199,24 @@ def make_chunked_recap():
         final_clips.extend(processed_clips)
 
     if final_clips:
-        print("\n--- Merging Video ---")
-        final_video_visual = concatenate_videoclips(final_clips, method="compose")
+        print("\n--- Merging with Liquid Flow ---")
+        # PADDING IS KEY: -0.6 means clips overlap by 0.6 seconds
+        final_video_visual = concatenate_videoclips(final_clips, method="compose", padding=-0.6)
         
-        # --- ADD BACKGROUND MUSIC ---
         if os.path.exists("background.mp3"):
-            print("--- Mixing Audio (This takes a moment) ---")
+            print("--- Mixing Soundtrack ---")
             bg_music = AudioFileClip("background.mp3")
             
-            # Loop
-            if bg_music.duration < final_video_visual.duration:
-                 bg_music = afx.audio_loop(bg_music, duration=final_video_visual.duration)
-            else:
-                 bg_music = bg_music.subclipped(0, final_video_visual.duration)
-            
-            # Volume
+            # Using new MoviePy 2.0 Syntax
+            bg_music = bg_music.with_effects([afx.AudioLoop(duration=final_video_visual.duration)])
             bg_music = bg_music.with_volume_scaled(MUSIC_VOLUME)
             
-            # Combine
             final_audio = CompositeAudioClip([final_video_visual.audio, bg_music])
             final_video_visual.audio = final_audio
-            print("Music Successfully Mixed!")
-        else:
-            print("Music file missing at the last step!")
+            print("Audio Mixed Successfully!")
 
         final_video_visual.write_videofile("Chunked_Recap.mp4", codec="libx264", audio_codec="aac")
-        print("DONE! Check the video.")
+        print("DONE! Your professional recap is ready.")
 
     # Cleanup
     for file in os.listdir():
