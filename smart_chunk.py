@@ -1,228 +1,272 @@
-import pysrt
-from moviepy import VideoFileClip, AudioFileClip, CompositeVideoClip, concatenate_videoclips, vfx, ImageClip, CompositeAudioClip, afx
-from sumy.parsers.plaintext import PlaintextParser
-from sumy.nlp.tokenizers import Tokenizer
-from sumy.summarizers.lsa import LsaSummarizer
-import pyttsx3  # <--- NEW MALE VOICE ENGINE
 import os
-import math
 import re
-from PIL import Image, ImageDraw, ImageFont
+import random
+import asyncio
+import pysrt
+import ollama
+import edge_tts
+import textwrap
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+from moviepy import * # --- ⚙️ USER SETTINGS ---
+MOVIE_FILE = "movie.mp4"
+SUBTITLE_FILE = "movie.srt"
+OUTPUT_FILE = "Final_OneLine_FluencyFixed.mp4"
+GENRE = "Horror"
+BGM_FILE = "music/horror.mp3"
+VOICE = "en-US-ChristopherNeural"
 
-# --- GLOBAL SETTINGS ---
-GAP_THRESHOLD = 10 
-MUSIC_VOLUME = 0.40  # Keep low to let the deep voice dominate
+# --- 🛠️ HELPER FUNCTIONS ---
 
-def clean_text(text):
-    return re.sub(r'[^a-zA-Z0-9\s]', '', text).lower().strip()
+def clean_ai_response(text):
+    text = re.sub(r'\(.*?\)', '', text)
+    remove_list = ["Here is a summary", "I cannot summarize", "happy to help", 
+                   "Or, if the text", "In this scene", "The scene depicts"]
+    for bad_word in remove_list:
+        text = text.replace(bad_word, "")
+    return text.replace('"', '').replace("  ", " ").strip()
 
-# --- SUBTITLE GENERATOR ---
-def create_subtitle_clip(text, duration, video_w, video_h):
+def is_garbage(text):
+    blacklist = ["movie scene", "short sentences", "summary of", "in the horror", 
+                 "in this clip", "describe the", "ai language model"]
+    text_lower = text.lower()
+    for bad in blacklist:
+        if bad in text_lower:
+            return True
+    return False
+
+def hybrid_split_text(text):
+    """
+    1. Splits at natural pauses (.,?,!) for audio flow.
+    2. Then checks length. If > 6 words, splits again for VISUAL safety.
+    """
+    # Step 1: Split by punctuation (Audio flow)
+    text = text.replace(",", "|")
+    text = text.replace(".", "|")
+    text = text.replace("?", "|")
+    text = text.replace("!", "|")
+    raw_chunks = [c.strip() for c in text.split("|") if c.strip()]
+    
+    final_chunks = []
+    
+    # Step 2: Enforce Word Limit (Visual safety)
+    MAX_WORDS = 6
+    
+    for chunk in raw_chunks:
+        words = chunk.split()
+        if len(words) <= MAX_WORDS:
+            final_chunks.append(chunk)
+        else:
+            # It's too long! Chop it gently.
+            # Example: 10 words -> split at 5
+            mid = len(words) // 2
+            part1 = " ".join(words[:mid])
+            part2 = " ".join(words[mid:])
+            final_chunks.append(part1)
+            final_chunks.append(part2)
+            
+    return final_chunks
+
+def time_to_seconds(t):
+    return t.hours * 3600 + t.minutes * 60 + t.seconds + t.milliseconds / 1000
+
+async def generate_voice(text, filename):
+    communicate = edge_tts.Communicate(text, VOICE)
+    await communicate.save(filename)
+
+def get_subtitles_for_range(subs, start_sec, end_sec):
+    text = []
+    for sub in subs:
+        s_sec = time_to_seconds(sub.start)
+        if start_sec <= s_sec < end_sec:
+            text.append(sub.text)
+    return " ".join(text)[:4000]
+
+# --- 🎨 SUBTITLE DRAWER (Safe Single Line) ---
+def create_safe_subtitle(text, duration, video_w, video_h):
+    img = Image.new('RGBA', (video_w, video_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    # Large Font
+    fontsize = 32 
     try:
-        img = Image.new('RGBA', (video_w, video_h), (255, 255, 255, 0))
-        draw = ImageDraw.Draw(img)
-        font_size = int(video_h * 0.05)
-        try:
-            font = ImageFont.truetype("arial.ttf", font_size)
-        except:
-            font = ImageFont.load_default()
-
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        x = (video_w - text_w) / 2
-        y = video_h - (video_h * 0.15) 
-
-        outline = "black"
-        thick = int(font_size / 15) + 1
-        for off_x in range(-thick, thick+1):
-            for off_y in range(-thick, thick+1):
-                draw.text((x+off_x, y+off_y), text, font=font, fill=outline)
-        draw.text((x, y), text, font=font, fill="yellow")
-
-        numpy_img = np.array(img)
-        txt_clip = ImageClip(numpy_img).with_duration(duration)
-        return txt_clip
+        font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", fontsize)
     except:
-        return None
+        font = ImageFont.load_default()
 
-def generate_voice(text, filename):
-    # --- NEW: MALE VOICE ENGINE ---
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    
+    x_pos = (video_w - text_w) // 2
+    y_pos = video_h - 100 
+    
+    pad = 10
+    draw.rectangle([x_pos-pad, y_pos-pad, x_pos+text_w+pad, y_pos+text_h+pad], fill=(0, 0, 0, 240))
+    draw.text((x_pos, y_pos), text, font=font, fill="#FFD700")
+
+    numpy_img = np.array(img)
+    return ImageClip(numpy_img).with_duration(duration)
+
+def calculate_smart_chunk_size(movie_minutes):
+    if movie_minutes < 30: target_recap = 5 
+    elif movie_minutes < 90: target_recap = 10 
+    else: target_recap = 14 
+    estimated_voice_per_chunk = 18 
+    needed_chunks = (target_recap * 60) / estimated_voice_per_chunk
+    return (movie_minutes * 60) / needed_chunks
+
+# --- 🧹 THE SCRUBBER ---
+def scrub_bad_scripts(num_chunks):
+    print("🧹 SCRUBBING: Searching for garbage phrases...")
+    deleted_count = 0
+    for i in range(num_chunks):
+        text_filename = f"script_{i:03d}.txt"
+        if os.path.exists(text_filename):
+            with open(text_filename, "r", encoding="utf-8") as f:
+                content = f.read()
+            if is_garbage(content):
+                print(f"   ⚠️ Found garbage in Scene {i} -> DELETING.")
+                os.remove(text_filename)
+                part_file = f"part_{i:03d}.mp4"
+                if os.path.exists(part_file): os.remove(part_file)
+                for x in range(20):
+                    aud = f"speech_split_{i:03d}_{x}.mp3"
+                    if os.path.exists(aud): os.remove(aud)
+                deleted_count += 1
+    
+    if deleted_count > 0:
+        print(f"   🗑️ Deleted {deleted_count} bad scripts.")
+
+# --- 🎬 THE ENGINE ---
+
+async def create_full_movie_recap():
+    print(f"--- 🎬 STARTING RECAP (HYBRID 6-WORD MODE) ---")
+    
+    if os.path.exists(OUTPUT_FILE): os.remove(OUTPUT_FILE)
+
     try:
-        engine = pyttsx3.init()
-        voices = engine.getProperty('voices')
-        # Windows usually puts Male (David) at index 0
-        engine.setProperty('voice', voices[0].id) 
-        engine.setProperty('rate', 145) # Slower = More Commanding
-        engine.save_to_file(text, filename)
-        engine.runAndWait()
+        subs = pysrt.open(SUBTITLE_FILE)
+        sub_duration = time_to_seconds(subs[-1].end)
+        with VideoFileClip(MOVIE_FILE) as temp_vid:
+            real_duration = temp_vid.duration
+            movie_duration = min(sub_duration, real_duration)
+            movie_minutes = movie_duration / 60
+        print(f"✅ Loaded. Duration: {movie_minutes:.1f} min.")
     except Exception as e:
-        print(f"Voice Error: {e}")
+        print(f"❌ Error loading files: {e}")
+        return
 
-def make_chunked_recap():
-    print("--- STARTING: LIQUID FLOW MODE (Male Voice + Melting Cuts) ---")
+    chunk_size = calculate_smart_chunk_size(movie_minutes)
+    num_chunks = int(movie_duration // chunk_size) + 1
     
-    music_file = "background.mp3"
-    if not os.path.exists(music_file):
-        print(f" WARNING: '{music_file}' not found.")
+    scrub_bad_scripts(num_chunks)
 
-    subs = pysrt.open('movie.srt')
-    video = VideoFileClip("movie.mp4")
-    video = video.resized(height=480) # Resize for performance
-    W, H = video.size
+    part_files = []
 
-    # --- AUTO-SCALE LOGIC (Tweaked for "More Speech") ---
-    duration_mins = video.duration / 60
-    print(f"Movie Duration: {duration_mins:.2f} minutes")
+    # --- 📢 STEP 0: INTRO ---
+    intro_part_file = "part_intro.mp4"
+    part_files.append(intro_part_file)
+    if not os.path.exists(intro_part_file):
+        print("📢 Rendering Intro...")
+        intro_text = "Recap starting now."
+        await generate_voice(intro_text, "intro_one.mp3")
+        intro_audio = AudioFileClip("intro_one.mp3")
+        with VideoFileClip(MOVIE_FILE) as v:
+            intro_vid = v.resized(height=480).subclipped(0, intro_audio.duration).without_audio()
+            intro_sub = create_safe_subtitle(intro_text, intro_audio.duration, intro_vid.w, intro_vid.h)
+            intro_final = CompositeVideoClip([intro_vid, intro_sub])
+            intro_final.audio = intro_audio
+            intro_final.write_videofile(intro_part_file, fps=24, preset="fast", codec="libx264", logger=None)
 
-    if duration_mins < 30:
-        print(" -> Mode: Short Film")
-        CHUNK_SIZE_MINUTES = 1.0
-        SENTENCES_PER_CHUNK = 4 # Increased for more detail
-    elif duration_mins < 100:
-        print(" -> Mode: Standard Feature")
-        CHUNK_SIZE_MINUTES = 2.5 # Reduced gap to keep story moving
-        SENTENCES_PER_CHUNK = 3  # Increased to 3 lines (Speak More)
-    else:
-        print(" -> Mode: Epic Movie")
-        CHUNK_SIZE_MINUTES = 4.0
-        SENTENCES_PER_CHUNK = 3 # Increased to 3 lines
-
-    total_chunks = math.ceil(video.duration / (CHUNK_SIZE_MINUTES * 60))
-    final_clips = []
+    # --- 🎞️ STEP 1: SCENES ---
+    print(f"⚡ Processing {num_chunks} Scenes...")
     
-    # INTRO
-    try:
-        intro_clip = video.subclipped(0, 8).without_audio()
-        intro_clip = intro_clip.with_effects([vfx.FadeIn(1.0)])
-        final_clips.append(intro_clip)
-    except: pass
-
-    used_sentences = []
-
-    for i in range(total_chunks):
-        print(f"\n--- Processing Chunk {i+1}/{total_chunks} ---")
-        chunk_start = i * CHUNK_SIZE_MINUTES * 60
-        chunk_end = (i + 1) * CHUNK_SIZE_MINUTES * 60
+    for i in range(num_chunks):
+        start_t = i * chunk_size
+        end_t = (i + 1) * chunk_size
+        if start_t >= movie_duration: break
         
-        chunk_subs = []
-        chunk_text_raw = ""
-        for sub in subs:
-            sub_start = sub.start.ordinal / 1000
-            if chunk_start <= sub_start < chunk_end:
-                chunk_subs.append(sub)
-                chunk_text_raw += sub.text + " "
+        part_filename = f"part_{i:03d}.mp4"
+        part_files.append(part_filename)
 
-        dialogue_clips_data = []
-        visual_clips_data = []
+        if os.path.exists(part_filename) and os.path.getsize(part_filename) > 1000:
+            print(f"   ⏩ Part {i} exists. Skipping.")
+            continue
 
-        # 1. DIALOGUE
-        if len(chunk_text_raw) > 20:
+        text_filename = f"script_{i:03d}.txt"
+        script = ""
+
+        if os.path.exists(text_filename):
+            with open(text_filename, "r", encoding="utf-8") as f:
+                script = f.read()
+        else:
+            print(f"   🔄 Chunk {i}: Generating CLEAN script...")
+            scene_text = get_subtitles_for_range(subs, start_t, end_t)
+            prompt = (f"Write exactly 2 simple story sentences for this movie scene. "
+                      f"Genre: {GENRE}. NO FILLER. Text: \"{scene_text}\"")
             try:
-                parser = PlaintextParser.from_string(chunk_text_raw, Tokenizer("english"))
-                summarizer = LsaSummarizer()
-                summary = summarizer(parser.document, SENTENCES_PER_CHUNK)
-                
-                for sentence in summary:
-                    text_str = str(sentence)
-                    ai_sentence_clean = clean_text(text_str)
-                    if len(ai_sentence_clean) < 5: continue 
-                    if any(ai_sentence_clean in u or u in ai_sentence_clean for u in used_sentences): continue
+                response = ollama.chat(model='llama3.2', messages=[{'role': 'user', 'content': prompt}])
+                script = clean_ai_response(response['message']['content'])
+                if is_garbage(script): script = "The story continues."
+            except:
+                script = "The story continues."
+            with open(text_filename, "w", encoding="utf-8") as f:
+                f.write(script)
 
-                    start_time = 0
-                    found = False
-                    for sub in chunk_subs:
-                        sub_clean = clean_text(sub.text)
-                        if ai_sentence_clean in sub_clean or sub_clean in ai_sentence_clean:
-                            start_time = sub.start.ordinal / 1000
-                            found = True
-                            break
-                    
-                    if found:
-                        mp3_name = f"temp_{i}_dial_{len(dialogue_clips_data)}.mp3"
-                        generate_voice(text_str, mp3_name)
-                        
-                        audio = AudioFileClip(mp3_name)
-                        # Add buffer so audio finishes before cut
-                        clip_end = start_time + audio.duration + 0.5 
-                        try:
-                            # FIX 1: SILENCE THE ORIGINAL VIDEO
-                            base_clip = video.subclipped(start_time, clip_end).without_audio()
-                            
-                            # FIX 2: THE "MELTING" EFFECT
-                            # We add a CrossFadeIn to start smoothly
-                            base_clip = base_clip.with_effects([vfx.CrossFadeIn(0.6)])
-                            
-                            base_clip = base_clip.with_audio(audio)
-                            sub_clip = create_subtitle_clip(text_str, base_clip.duration, W, H)
-                            
-                            if sub_clip:
-                                final_scene_clip = CompositeVideoClip([base_clip, sub_clip])
-                                final_scene_clip.audio = audio
-                            else:
-                                final_scene_clip = base_clip 
-
-                            dialogue_clips_data.append({"start": start_time, "end": clip_end, "clip": final_scene_clip})
-                            used_sentences.append(ai_sentence_clean)
-                            print(f"   -> Speaking: {text_str[:25]}...")
-                        except: pass
-            except: pass
-
-        # 2. VISUALS (The Glue)
-        forbidden_ranges = [(d["start"] - 4, d["end"] + 4) for d in dialogue_clips_data]
-        offsets = [0.15, 0.50, 0.85]
-        for idx, percent in enumerate(offsets):
-            chunk_duration = chunk_end - chunk_start
-            clip_start = chunk_start + (chunk_duration * percent)
-            clip_end = clip_start + 4 
-            if clip_start > video.duration - 5: continue
-            is_safe = True
-            for (bad_start, bad_end) in forbidden_ranges:
-                if not (clip_end < bad_start or clip_start > bad_end):
-                    is_safe = False
-                    break
-            if is_safe:
-                try:
-                    # FIX: Silent + Melt
-                    action_clip = video.subclipped(clip_start, clip_end).without_audio()
-                    action_clip = action_clip.with_effects([vfx.CrossFadeIn(0.6)])
-                    
-                    visual_clips_data.append({"start": clip_start, "end": clip_end, "clip": action_clip})
-                    print(f"     -> Visual Added")
-                except: pass
-
-        # 3. MERGE
-        all_scene_clips = dialogue_clips_data + visual_clips_data
-        all_scene_clips.sort(key=lambda x: x["start"])
-        processed_clips = [c["clip"] for c in all_scene_clips]
-        final_clips.extend(processed_clips)
-
-    if final_clips:
-        print("\n--- Merging with Liquid Flow ---")
-        # PADDING IS KEY: -0.6 means clips overlap by 0.6 seconds
-        final_video_visual = concatenate_videoclips(final_clips, method="compose", padding=-0.6)
+        # 🛑 HERE IS THE FIX: Hybrid Split (Pause + Length Limit)
+        chunks = hybrid_split_text(script)
         
-        if os.path.exists("background.mp3"):
-            print("--- Mixing Soundtrack ---")
-            bg_music = AudioFileClip("background.mp3")
-            
-            # Using new MoviePy 2.0 Syntax
-            bg_music = bg_music.with_effects([afx.AudioLoop(duration=final_video_visual.duration)])
-            bg_music = bg_music.with_volume_scaled(MUSIC_VOLUME)
-            
-            final_audio = CompositeAudioClip([final_video_visual.audio, bg_music])
-            final_video_visual.audio = final_audio
-            print("Audio Mixed Successfully!")
+        print(f"   🎥 Rendering Part {i} ({len(chunks)} chunks)...")
+        try:
+            video_chunk_source = VideoFileClip(MOVIE_FILE).resized(height=480)
+            chunk_clips = []
 
-        final_video_visual.write_videofile("Chunked_Recap.mp4", codec="libx264", audio_codec="aac")
-        print("DONE! Your professional recap is ready.")
+            for idx, chunk in enumerate(chunks):
+                chunk_audio_file = f"speech_split_{i:03d}_{idx}.mp3"
+                if not os.path.exists(chunk_audio_file):
+                    await generate_voice(chunk, chunk_audio_file)
+                
+                audio_clip = AudioFileClip(chunk_audio_file)
+                
+                safe_end = min(end_t, movie_duration - 0.5)
+                max_start = max(0, safe_end - audio_clip.duration)
+                if max_start <= start_t: max_start = start_t
+                rand_start = random.uniform(start_t, max_start)
+                
+                video_clip = video_chunk_source.subclipped(rand_start, rand_start + audio_clip.duration).without_audio()
+                sub_clip = create_safe_subtitle(chunk, audio_clip.duration, video_clip.w, video_clip.h)
+                
+                final_sent_clip = CompositeVideoClip([video_clip, sub_clip])
+                final_sent_clip.audio = audio_clip
+                chunk_clips.append(final_sent_clip)
 
-    # Cleanup
-    for file in os.listdir():
-        if (file.startswith("temp_") and file.endswith(".mp3")) or (file.startswith("temp_sub_") and file.endswith(".png")):
-            try: os.remove(file)
-            except: pass
+            if chunk_clips:
+                final_chunk = concatenate_videoclips(chunk_clips, method="compose")
+                final_chunk.write_videofile(part_filename, fps=24, preset="ultrafast", codec="libx264", threads=4, logger=None)
+            
+            video_chunk_source.close()
+            
+        except Exception as e:
+            print(f"⚠️ Error Part {i}: {e}")
+            if 'video_chunk_source' in locals(): video_chunk_source.close()
+
+    # 4. STITCH
+    print("\n💿 Stitching...")
+    valid_parts = [VideoFileClip(f) for f in part_files if os.path.exists(f)]
+    
+    if valid_parts:
+        full_movie = concatenate_videoclips(valid_parts, method="compose")
+        if os.path.exists(BGM_FILE):
+            bgm = AudioFileClip(BGM_FILE)
+            num_loops = int(full_movie.duration // bgm.duration) + 2
+            bgm = concatenate_audioclips([bgm] * num_loops).with_duration(full_movie.duration)
+            bgm = bgm.with_volume_scaled(0.15)
+            final_audio = CompositeAudioClip([full_movie.audio, bgm])
+            full_movie.audio = final_audio
+
+        full_movie.write_videofile(OUTPUT_FILE, fps=24, preset="fast", codec="libx264", threads=4)
+        print("\n✅ DONE.")
 
 if __name__ == "__main__":
-    make_chunked_recap()
+    asyncio.run(create_full_movie_recap())
