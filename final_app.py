@@ -8,6 +8,7 @@ import pysrt
 import ollama
 import edge_tts
 import numpy as np
+import time
 from PIL import Image, ImageDraw, ImageFont
 from moviepy import *
 import threading
@@ -26,20 +27,20 @@ class MovieRecapApp(ctk.CTk):
         self.is_running = False
 
         # WINDOW SETUP
-        self.title("Movie Recap AI - FINAL")
-        self.geometry("700x650")
-        self.resizable(False, False)
+        self.title("Movie Recap AI - 15 MINUTE TARGET")
+        self.geometry("750x600")
+        self.resizable(True, True)
 
         # HEADER
         self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.header_frame.pack(pady=15)
-        ctk.CTkLabel(self.header_frame, text="🎬 MOVIE RECAP AI", font=("Roboto", 28, "bold"), text_color="#3B8ED0").pack()
-        self.status_label = ctk.CTkLabel(self.header_frame, text="Ready to Render", font=("Roboto", 12), text_color="gray")
+        self.header_frame.pack(pady=10)
+        ctk.CTkLabel(self.header_frame, text="🎬 MOVIE RECAP AI", font=("Roboto", 24, "bold"), text_color="#2CC985").pack()
+        self.status_label = ctk.CTkLabel(self.header_frame, text="Target: 15-17 Minutes (Strict Mode).", font=("Roboto", 12), text_color="gray")
         self.status_label.pack()
 
         # INPUT ZONE
         self.input_frame = ctk.CTkFrame(self)
-        self.input_frame.pack(pady=10, padx=20, fill="x")
+        self.input_frame.pack(pady=5, padx=20, fill="x")
 
         # Movie Selector
         self.movie_label = ctk.CTkLabel(self.input_frame, text="No movie selected...", width=300, anchor="w", text_color="gray")
@@ -55,7 +56,7 @@ class MovieRecapApp(ctk.CTk):
 
         # OPTIONS ZONE
         self.options_frame = ctk.CTkFrame(self)
-        self.options_frame.pack(pady=10, padx=20, fill="x")
+        self.options_frame.pack(pady=5, padx=20, fill="x")
 
         # Genre Dropdown
         ctk.CTkLabel(self.options_frame, text="Genre:").grid(row=0, column=0, padx=15, pady=15)
@@ -76,20 +77,29 @@ class MovieRecapApp(ctk.CTk):
         )
         self.voice_combo.grid(row=0, column=3, padx=10, pady=15)
 
+        # PROGRESS BAR
+        self.progress_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.progress_frame.pack(pady=5, padx=20, fill="x")
+        self.progress_label = ctk.CTkLabel(self.progress_frame, text="0%", font=("Roboto", 12, "bold"))
+        self.progress_label.pack(side="right")
+        self.progress_bar = ctk.CTkProgressBar(self.progress_frame, width=500, progress_color="#2CC985")
+        self.progress_bar.set(0)
+        self.progress_bar.pack(side="left", fill="x", expand=True, padx=10)
+
         # START BUTTON
         self.start_btn = ctk.CTkButton(
             self, 
-            text="🚀 START RENDER", 
+            text="🚀 START 15-MIN RENDER", 
             font=("Roboto", 18, "bold"), 
-            height=50, 
+            height=40, 
             fg_color="#2CC985", 
             hover_color="#229966",
             command=self.start_process
         )
-        self.start_btn.pack(pady=20, padx=40, fill="x")
+        self.start_btn.pack(pady=10, padx=40, fill="x")
 
         # LOG BOX
-        self.log_box = ctk.CTkTextbox(self, width=650, height=200, font=("Consolas", 11))
+        self.log_box = ctk.CTkTextbox(self, width=650, height=150, font=("Consolas", 11))
         self.log_box.pack(pady=0, padx=20)
         self.log("--- SYSTEM READY ---")
 
@@ -97,6 +107,12 @@ class MovieRecapApp(ctk.CTk):
     def log(self, message):
         self.log_box.insert("end", message + "\n")
         self.log_box.see("end")
+
+    def update_progress(self, current, total, status_msg):
+        percentage = current / total
+        self.progress_bar.set(percentage)
+        self.progress_label.configure(text=f"{int(percentage*100)}%")
+        self.status_label.configure(text=status_msg, text_color="#3B8ED0")
 
     def select_movie_file(self):
         filename = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4 *.mkv")])
@@ -121,8 +137,9 @@ class MovieRecapApp(ctk.CTk):
             return
 
         self.is_running = True
-        self.start_btn.configure(state="disabled", text="⏳ RENDERING...", fg_color="gray")
-        self.status_label.configure(text="Processing... Do not close window.", text_color="#FFAA00")
+        self.start_btn.configure(state="disabled", text="⏳ RENDERING (Target ~15m)...", fg_color="gray")
+        self.status_label.configure(text="Processing...", text_color="#FFAA00")
+        self.progress_bar.set(0)
         
         threading.Thread(target=self.run_engine_thread, daemon=True).start()
 
@@ -131,55 +148,65 @@ class MovieRecapApp(ctk.CTk):
             asyncio.run(self.engine_logic())
             self.log("\n✅ DONE! Video Saved.")
             self.status_label.configure(text="Render Complete!", text_color="#2CC985")
+            self.progress_bar.set(1)
+            self.progress_label.configure(text="100%")
         except Exception as e:
             self.log(f"\n❌ CRITICAL ERROR: {e}")
             self.status_label.configure(text="Error Occurred", text_color="red")
         finally:
             self.is_running = False
-            self.start_btn.configure(state="normal", text="🚀 START RENDER", fg_color="#2CC985")
+            self.start_btn.configure(state="normal", text="🚀 START 15-MIN RENDER", fg_color="#2CC985")
 
     # --- 🧠 THE ENGINE ---
     async def engine_logic(self):
         # --- SETTINGS ---
-        PREVIEW_MODE = True  # <--- SET TO 'False' FOR FULL MOVIE
-        CHUNK_SIZE = 60      # 60s Window
-        MAX_WORDS = 8        # Strict 8-word limit
+        PREVIEW_MODE = False
+        
+        # ⚡⚡⚡ THE ORIGINAL 60s CHUNK ⚡⚡⚡
+        CHUNK_SIZE = 60  
+        MAX_WORDS = 8        
         
         MOVIE_FILE = self.movie_path
         SUBTITLE_FILE = self.sub_path
         GENRE = self.genre_combo.get()
         VOICE = self.voice_combo.get()
         OUTPUT_FILE = os.path.join(os.path.dirname(MOVIE_FILE), f"Recap_{GENRE}_{os.path.basename(MOVIE_FILE)}")
+        SCRIPT_LOG = os.path.join(os.path.dirname(MOVIE_FILE), "script_log.txt")
 
-        # 🎵 ROBUST MUSIC FINDER
+        # 🎵 MUSIC CHECK
         genre_map = {
             "action": "action.mp3", "horror": "horror.mp3", "romantic": "romantic.mp3",
             "sad": "sad.mp3", "sci-fi": "sci-fi.mp3", "thriller": "thriller.mp3"
         }
-        
         script_folder = os.path.dirname(os.path.abspath(__file__))
         music_filename = genre_map.get(GENRE, "thriller.mp3") 
         BGM_FILE = os.path.join(script_folder, "music", music_filename)
-        
         if not os.path.exists(BGM_FILE):
              BGM_FILE = os.path.join(os.path.dirname(MOVIE_FILE), "music", music_filename)
 
-        self.log(f"--- 🎬 STARTING ENGINE ---")
-        self.log(f"⚡ Mode: {'PREVIEW (5 Scenes)' if PREVIEW_MODE else 'FULL MOVIE'}")
-        
-        if os.path.exists(BGM_FILE):
-             self.log(f"✅ Music Found: {BGM_FILE}")
-        else:
-             self.log(f"❌ MUSIC MISSING! Searched: {BGM_FILE}")
+        self.log(f"--- 🎬 STARTING RENDER ---")
+        if os.path.exists(BGM_FILE): self.log(f"✅ Music Found: {os.path.basename(BGM_FILE)}")
+        else: self.log(f"❌ MUSIC MISSING!")
 
-        # --- HELPER FUNCTIONS ---
+        # --- 🧹 THE SILENCER (STRICT) ---
         def clean_ai(text):
             text = re.sub(r'\(.*?\)', '', text)
-            rem = ["Here is", "I cannot", "happy to help", "In this scene", "The scene depicts", "summary", "Okay,", "Sure"]
-            for r in rem: text = text.replace(r, "")
-            # 🔊 FLUENCY FIX: Replace newlines with spaces so voice doesn't pause
-            text = text.replace("\n", " ")
-            return text.replace('"', '').strip()
+            text = re.sub(r'\[.*?\]', '', text)
+            sentences = text.replace("!", ".").replace("?", ".").split(".")
+            clean_sentences = []
+            banned_starts = ["i will", "i can", "i am", "sure", "here is", "happy to", "in this scene", "the scene depicts", "please provide", "certainly", "okay", "context", "atmosphere", "however", "additionally", "as an ai", "let me", "hope this"]
+            for s in sentences:
+                s_clean = s.strip()
+                s_lower = s_clean.lower()
+                if len(s_clean) < 3: continue
+                is_banned = False
+                for bad in banned_starts:
+                    if s_lower.startswith(bad):
+                        is_banned = True
+                        break
+                if "narration" in s_lower or "chatbot" in s_lower: is_banned = True
+                if not is_banned: clean_sentences.append(s_clean)
+            return ". ".join(clean_sentences) + "."
 
         def strict_split(text):
             text = text.replace("?", ".").replace("!", ".").replace(";", ".")
@@ -198,9 +225,20 @@ class MovieRecapApp(ctk.CTk):
         def time_to_sec(t):
             return t.hours*3600 + t.minutes*60 + t.seconds + t.milliseconds/1000
 
+        # --- 🛡️ AUTO-RETRY VOICE ---
         async def gen_voice(txt, fn):
-            # 🔊 FLUENCY FIX: +5% Speed for natural flow, +10% Volume
-            await edge_tts.Communicate(txt, VOICE, volume="+10%", rate="+5%").save(fn)
+            MAX_RETRIES = 5
+            for attempt in range(MAX_RETRIES):
+                try:
+                    await edge_tts.Communicate(txt, VOICE, volume="+10%", rate="+5%").save(fn)
+                    return
+                except Exception as e:
+                    self.log(f"   ⚠️ Connection Failed. Retrying in 3s...")
+                    time.sleep(3)
+            
+            self.log("   ❌ INTERNET DEAD. Silent Clip.")
+            silent_clip = AudioArrayClip(np.zeros((44100, 2)), fps=44100).with_duration(3)
+            silent_clip.write_audiofile(fn)
 
         def get_subs(subs, s, e):
             t = []
@@ -249,10 +287,17 @@ class MovieRecapApp(ctk.CTk):
                 sub = draw_sub(intro_text, aud.duration, cl.w, cl.h)
                 fin = CompositeVideoClip([cl, sub])
                 fin = fin.with_audio(aud)
-                fin.write_videofile(intro_f, fps=24, preset="fast", logger=None)
+                fin.write_videofile(intro_f, fps=24, preset="ultrafast", logger=None)
 
         # --- SCENE LOOP ---
+        with open(SCRIPT_LOG, "w") as log_file:
+            log_file.write("--- SCRIPT GENERATION LOG ---\n")
+
+        styles = ["Be intense.", "Be mysterious.", "Be emotional.", "Describe the action.", "Build suspense."]
+
         for i in range(num_chunks):
+            self.update_progress(i, num_chunks, f"Processing Scene {i+1} of {num_chunks}...")
+
             if PREVIEW_MODE and i >= 5: 
                 self.log("🛑 PREVIEW MODE: Stopping after 5 scenes.")
                 break 
@@ -268,19 +313,35 @@ class MovieRecapApp(ctk.CTk):
                 self.log(f"⏩ Part {i} exists. Skipping.")
                 continue
 
-            self.log(f"🔄 Processing Scene {i+1}/{num_chunks}...")
+            self.log(f"🔄 Analyzing Scene {i+1}...")
             
             # 1. GENERATE SCRIPT
+            current_style = random.choice(styles)
             scene_txt = get_subs(subs, s_t, e_t)
-            prompt = (f"Act as a movie narrator. Write exactly 4 extremely SHORT sentences. "
-                      f"Maximum 8 words per sentence. Start immediately. Genre: {GENRE}. "
-                      f"Context: {scene_txt}")
+            
+            # ⚡⚡⚡ PROMPT FIX: FORCE MAXIMUM 25 WORDS ⚡⚡⚡
+            # This is the "Lock" that ensures 15-minute length.
+            prompt = (f"SYSTEM: You are a scriptwriter. OUTPUT ONLY THE STORY. "
+                      f"DO NOT TALK TO ME. DO NOT USE PREAMBLE. "
+                      f"Summarize this short scene in exactly 2 sentences (Maximum 25 words). "
+                      f"Style: {current_style}. Context: {scene_txt}")
+            
+            script = ""
             try:
                 resp = ollama.chat(model='llama3.2', messages=[{'role':'user','content':prompt}])
                 script = clean_ai(resp['message']['content'])
-            except: script = "The story continues."
+            except Exception as e:
+                self.log(f"⚠️ AI Busy. Using Real Subtitles.")
+                words = scene_txt.split()
+                script = " ".join(words[:25]) + "."
+            
+            if not script or len(script) < 5:
+                script = "The scene unfolds silently."
 
-            # 2. GENERATE FULL AUDIO (Fluency)
+            with open(SCRIPT_LOG, "a") as log_file:
+                log_file.write(f"\nScene {i}: {script}\n")
+
+            # 2. GENERATE AUDIO
             full_audio_path = f"aud_{i}_full.mp3"
             await gen_voice(script, full_audio_path)
             full_aud_clip = AudioFileClip(full_audio_path)
@@ -311,25 +372,26 @@ class MovieRecapApp(ctk.CTk):
             final_part.write_videofile(pf, fps=24, preset="ultrafast", threads=4, logger=None)
 
         # --- FINAL STITCH ---
-        self.log("💿 Stitching Video...")
+        self.log("💿 Stitching Final Video...")
+        self.update_progress(99, 100, "Final Stitching & Music Mix...")
+        
         valids = [VideoFileClip(f) for f in part_files if os.path.exists(f)]
         if valids:
             full_movie = concatenate_videoclips(valids)
             
-            # 🎵 BGM FIX: LOUDER (50%)
             if os.path.exists(BGM_FILE):
                 bgm = AudioFileClip(BGM_FILE)
                 num_loops = int(full_movie.duration // bgm.duration) + 2
                 bgm = concatenate_audioclips([bgm] * num_loops).with_duration(full_movie.duration)
-                bgm = bgm.with_volume_scaled(0.50) # 50% Volume
+                bgm = bgm.with_volume_scaled(0.50) 
                 
-                # Combine
                 final_audio = CompositeAudioClip([full_movie.audio, bgm])
                 full_movie = full_movie.with_audio(final_audio)
             
-            full_movie.write_videofile(OUTPUT_FILE, fps=24, preset="fast", threads=4)
+            full_movie.write_videofile(OUTPUT_FILE, fps=24, preset="ultrafast", threads=4)
             self.log(f"✅ SUCCESS! Saved to {OUTPUT_FILE}")
 
 if __name__ == "__main__":
+    print("--- 🚀 LAUNCHING APP... ---")
     app = MovieRecapApp()
     app.mainloop()
