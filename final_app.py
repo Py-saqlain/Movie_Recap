@@ -9,6 +9,7 @@ import ollama
 import edge_tts
 import numpy as np
 import time
+import gc  # <--- NEW: Required for RAM safety
 from PIL import Image, ImageDraw, ImageFont
 from moviepy import *
 import threading
@@ -27,7 +28,7 @@ class MovieRecapApp(ctk.CTk):
         self.is_running = False
 
         # WINDOW SETUP
-        self.title("Movie Recap AI - 15 MINUTE TARGET")
+        self.title("Movie Recap AI")
         self.geometry("750x600")
         self.resizable(True, True)
 
@@ -35,7 +36,7 @@ class MovieRecapApp(ctk.CTk):
         self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.header_frame.pack(pady=10)
         ctk.CTkLabel(self.header_frame, text="🎬 MOVIE RECAP AI", font=("Roboto", 24, "bold"), text_color="#2CC985").pack()
-        self.status_label = ctk.CTkLabel(self.header_frame, text="Target: 15-17 Minutes (Strict Mode).", font=("Roboto", 12), text_color="gray")
+        self.status_label = ctk.CTkLabel(self.header_frame, text="Ready for 40-minute Stress Test.", font=("Roboto", 12), text_color="gray")
         self.status_label.pack()
 
         # INPUT ZONE
@@ -66,7 +67,7 @@ class MovieRecapApp(ctk.CTk):
             width=150
         )
         self.genre_combo.grid(row=0, column=1, padx=10, pady=15)
-        self.genre_combo.set("thriller")
+        self.genre_combo.set("action")
 
         # Voice Dropdown
         ctk.CTkLabel(self.options_frame, text="Voice:").grid(row=0, column=2, padx=15, pady=15)
@@ -89,7 +90,7 @@ class MovieRecapApp(ctk.CTk):
         # START BUTTON
         self.start_btn = ctk.CTkButton(
             self, 
-            text="🚀 START 15-MIN RENDER", 
+            text="🚀 START RENDER", 
             font=("Roboto", 18, "bold"), 
             height=40, 
             fg_color="#2CC985", 
@@ -137,7 +138,7 @@ class MovieRecapApp(ctk.CTk):
             return
 
         self.is_running = True
-        self.start_btn.configure(state="disabled", text="⏳ RENDERING (Target ~15m)...", fg_color="gray")
+        self.start_btn.configure(state="disabled", text="⏳ RENDERING...", fg_color="gray")
         self.status_label.configure(text="Processing...", text_color="#FFAA00")
         self.progress_bar.set(0)
         
@@ -155,14 +156,12 @@ class MovieRecapApp(ctk.CTk):
             self.status_label.configure(text="Error Occurred", text_color="red")
         finally:
             self.is_running = False
-            self.start_btn.configure(state="normal", text="🚀 START 15-MIN RENDER", fg_color="#2CC985")
+            self.start_btn.configure(state="normal", text="🚀 START RENDER", fg_color="#2CC985")
 
     # --- 🧠 THE ENGINE ---
     async def engine_logic(self):
         # --- SETTINGS ---
         PREVIEW_MODE = False
-        
-        # ⚡⚡⚡ THE ORIGINAL 60s CHUNK ⚡⚡⚡
         CHUNK_SIZE = 60  
         MAX_WORDS = 8        
         
@@ -272,15 +271,19 @@ class MovieRecapApp(ctk.CTk):
         
         num_chunks = int(mov_dur // CHUNK_SIZE) + 1
         part_files = []
+        audio_cleanup_list = [] # 🗑️ LIST TO TRACK AUDIO FILES FOR DELETION
 
         # --- INTRO ---
         intro_f = "part_intro.mp4"
+        intro_a = "intro.mp3"
         part_files.append(intro_f)
+        audio_cleanup_list.append(intro_a)
+
         if not os.path.exists(intro_f):
             self.log("📢 Rendering Intro...")
             intro_text = "Recap starting here."
-            await gen_voice(intro_text, "intro.mp3")
-            aud = AudioFileClip("intro.mp3")
+            await gen_voice(intro_text, intro_a)
+            aud = AudioFileClip(intro_a)
             with VideoFileClip(MOVIE_FILE) as v:
                 start_skip = 60 if v.duration > 120 else 0
                 cl = v.resized(height=480).subclipped(start_skip, start_skip+aud.duration).without_audio()
@@ -319,8 +322,7 @@ class MovieRecapApp(ctk.CTk):
             current_style = random.choice(styles)
             scene_txt = get_subs(subs, s_t, e_t)
             
-            # ⚡⚡⚡ PROMPT FIX: FORCE MAXIMUM 25 WORDS ⚡⚡⚡
-            # This is the "Lock" that ensures 15-minute length.
+            # Force max 25 words to keep it tight
             prompt = (f"SYSTEM: You are a scriptwriter. OUTPUT ONLY THE STORY. "
                       f"DO NOT TALK TO ME. DO NOT USE PREAMBLE. "
                       f"Summarize this short scene in exactly 2 sentences (Maximum 25 words). "
@@ -343,6 +345,7 @@ class MovieRecapApp(ctk.CTk):
 
             # 2. GENERATE AUDIO
             full_audio_path = f"aud_{i}_full.mp3"
+            audio_cleanup_list.append(full_audio_path) # 🗑️ Mark this audio for deletion later
             await gen_voice(script, full_audio_path)
             full_aud_clip = AudioFileClip(full_audio_path)
 
@@ -371,6 +374,11 @@ class MovieRecapApp(ctk.CTk):
             final_part = visual_track.with_audio(full_aud_clip)
             final_part.write_videofile(pf, fps=24, preset="ultrafast", threads=4, logger=None)
 
+            # --- 🧹 RAM CLEANUP (CRITICAL FOR STRESS TEST) ---
+            del final_part, visual_track, full_aud_clip, clips, v_source
+            gc.collect() 
+            # ------------------------------------------------
+
         # --- FINAL STITCH ---
         self.log("💿 Stitching Final Video...")
         self.update_progress(99, 100, "Final Stitching & Music Mix...")
@@ -383,13 +391,31 @@ class MovieRecapApp(ctk.CTk):
                 bgm = AudioFileClip(BGM_FILE)
                 num_loops = int(full_movie.duration // bgm.duration) + 2
                 bgm = concatenate_audioclips([bgm] * num_loops).with_duration(full_movie.duration)
-                bgm = bgm.with_volume_scaled(0.50) 
+                bgm = bgm.with_volume_scaled(0.30) 
                 
                 final_audio = CompositeAudioClip([full_movie.audio, bgm])
                 full_movie = full_movie.with_audio(final_audio)
             
             full_movie.write_videofile(OUTPUT_FILE, fps=24, preset="ultrafast", threads=4)
             self.log(f"✅ SUCCESS! Saved to {OUTPUT_FILE}")
+
+            # --- 🗑️ TRASH CLEANUP (The New Feature) ---
+            self.log("🧹 Cleaning up temp files...")
+            full_movie.close() # Release file handle
+            
+            # Delete Video Parts
+            for f in part_files:
+                if os.path.exists(f):
+                    try: os.remove(f)
+                    except: pass
+            
+            # Delete Audio Parts
+            for a in audio_cleanup_list:
+                if os.path.exists(a):
+                    try: os.remove(a)
+                    except: pass
+            
+            self.log("✨ All temporary files deleted. Folder is clean.")
 
 if __name__ == "__main__":
     print("--- 🚀 LAUNCHING APP... ---")
