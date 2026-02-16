@@ -4,22 +4,15 @@ import os
 import re
 import random
 import asyncio
-import pysrt
+import pysrt 
 import ollama
 import edge_tts
 import numpy as np
 import time
-import gc  # <--- NEW: Required for RAM safety
+import gc 
 from PIL import Image, ImageDraw, ImageFont
 from moviepy import *
 import threading
-
-from scenedetect import open_video, SceneManager
-from scenedetect.detectors import ContentDetector
-import whisper # <--- NEW: The ears of the operation
-import threading
-
-
 
 # --- 🎨 VISUAL SETTINGS ---
 ctk.set_appearance_mode("Dark")
@@ -28,73 +21,77 @@ ctk.set_default_color_theme("blue")
 class MovieRecapApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+
         # VARIABLES
         self.movie_path = ""
-        # self.sub_path = "" # <--- REMOVED
+        self.srt_path = ""
         self.is_running = False
 
-        # WINDOW SETUP
-        self.title("Movie Recap AI")
-        self.geometry("750x550") # <--- Adjusted height slightly
+        # WINDOW SETUP - Made smaller as requested!
+        self.title("Movie Recap Dashboard")
+        self.geometry("800x800") 
         self.resizable(True, True)
 
         # HEADER
         self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.header_frame.pack(pady=10)
-        ctk.CTkLabel(self.header_frame, text="🎬 MOVIE RECAP AI", font=("Roboto", 24, "bold"), text_color="#2CC985").pack()
-        self.status_label = ctk.CTkLabel(self.header_frame, text="Ready. No SRT file needed.", font=("Roboto", 12), text_color="gray")
+        self.header_frame.pack(pady=20)
+        ctk.CTkLabel(self.header_frame, text="🎬 MOVIE RECAP APP", font=("Roboto", 22, "bold"), text_color="#2CC985").pack()
+        self.status_label = ctk.CTkLabel(self.header_frame, text="Powered by .SRT - Zero Wait Time!", font=("Roboto", 12), text_color="gray")
         self.status_label.pack()
 
         # INPUT ZONE
         self.input_frame = ctk.CTkFrame(self)
-        self.input_frame.pack(pady=5, padx=20, fill="x")
+        self.input_frame.pack(pady=15, padx=20, fill="x")
 
         # Movie Selector
         self.movie_label = ctk.CTkLabel(self.input_frame, text="No movie selected...", width=300, anchor="w", text_color="gray")
-        self.movie_label.grid(row=0, column=0, padx=20, pady=10)
+        self.movie_label.grid(row=0, column=0, padx=20, pady=5)
         self.movie_btn = ctk.CTkButton(self.input_frame, text="Select Movie", command=self.select_movie_file)
-        self.movie_btn.grid(row=0, column=1, padx=20, pady=10)
+        self.movie_btn.grid(row=0, column=1, padx=20, pady=5)
 
-        # --- SUBTITLE SELECTOR REMOVED ---
-        # self.sub_label = ctk.CTkLabel(self.input_frame, text="No subtitles selected...", ...) 
-        # self.sub_btn = ctk.CTkButton(self.input_frame, text="Select Subtitles", ...)
+        # SRT Selector
+        self.srt_label = ctk.CTkLabel(self.input_frame, text="No .srt selected...", width=300, anchor="w", text_color="gray")
+        self.srt_label.grid(row=1, column=0, padx=20, pady=5)
+        self.srt_btn = ctk.CTkButton(self.input_frame, text="Select .srt File", command=self.select_srt_file)
+        self.srt_btn.grid(row=1, column=1, padx=20, pady=5)
 
         # OPTIONS ZONE
         self.options_frame = ctk.CTkFrame(self)
-        self.options_frame.pack(pady=5, padx=20, fill="x")
+        self.options_frame.pack(pady=15, padx=20, fill="x")
 
-        # Genre Dropdown
-        ctk.CTkLabel(self.options_frame, text="Genre:").grid(row=0, column=0, padx=15, pady=15)
-        self.genre_combo = ctk.CTkComboBox(
-            self.options_frame, 
-            values=["action", "horror", "romantic", "sad", "sci-fi", "thriller"],
-            width=150
-        )
-        self.genre_combo.grid(row=0, column=1, padx=10, pady=15)
-        self.genre_combo.set("action")
+        # Language Dropdown
+        ctk.CTkLabel(self.options_frame, text="Language:").grid(row=0, column=0, padx=10, pady=10)
+        self.lang_combo = ctk.CTkComboBox(self.options_frame, values=["English", "Urdu"], command=self.change_language, width=120)
+        self.lang_combo.grid(row=0, column=1, padx=10, pady=10)
+        self.lang_combo.set("English")
 
         # Voice Dropdown
-        ctk.CTkLabel(self.options_frame, text="Voice:").grid(row=0, column=2, padx=15, pady=15)
-        self.voice_combo = ctk.CTkComboBox(
-            self.options_frame, 
-            values=["en-US-ChristopherNeural", "en-US-EricNeural", "en-US-AnaNeural"],
-            width=180
-        )
-        self.voice_combo.grid(row=0, column=3, padx=10, pady=15)
+        ctk.CTkLabel(self.options_frame, text="Voice:").grid(row=0, column=2, padx=10, pady=10)
+        self.voice_combo = ctk.CTkComboBox(self.options_frame, values=["en-US-ChristopherNeural", "en-US-EricNeural", "en-US-AnaNeural"], width=180)
+        self.voice_combo.grid(row=0, column=3, padx=10, pady=10)
 
-        # PROGRESS BAR, START BUTTON, LOG BOX (No changes to these)
-        # ... (The rest of your __init__ code is the same)
+        # Genre Dropdown
+        ctk.CTkLabel(self.options_frame, text="Music:").grid(row=1, column=0, padx=10, pady=5)
+        self.genre_combo = ctk.CTkComboBox(self.options_frame, values=["action", "horror", "romantic", "sad", "sci-fi", "thriller"], width=120)
+        self.genre_combo.grid(row=1, column=1, padx=10, pady=5)
+        self.genre_combo.set("horror")
+
+        # PROGRESS BAR
         self.progress_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.progress_frame.pack(pady=5, padx=20, fill="x")
+        self.progress_frame.pack(pady=15, padx=20, fill="x")
         self.progress_label = ctk.CTkLabel(self.progress_frame, text="0%", font=("Roboto", 12, "bold"))
         self.progress_label.pack(side="right")
-        self.progress_bar = ctk.CTkProgressBar(self.progress_frame, width=500, progress_color="#2CC985")
+        self.progress_bar = ctk.CTkProgressBar(self.progress_frame, width=450, progress_color="#2CC985")
         self.progress_bar.set(0)
         self.progress_bar.pack(side="left", fill="x", expand=True, padx=10)
-        self.start_btn = ctk.CTkButton(self, text="🚀 START RENDER", font=("Roboto", 18, "bold"), height=40, fg_color="#2CC985", hover_color="#229966", command=self.start_process)
-        self.start_btn.pack(pady=10, padx=40, fill="x")
-        self.log_box = ctk.CTkTextbox(self, width=650, height=150, font=("Consolas", 11))
-        self.log_box.pack(pady=0, padx=20)
+
+        # START BUTTON
+        self.start_btn = ctk.CTkButton(self, text="🚀 START RENDER", font=("Roboto", 16, "bold"), height=35, fg_color="#2CC985", hover_color="#229966", command=self.start_process)
+        self.start_btn.pack(pady=15, padx=40, fill="x")
+
+        # LOG BOX - Reduced height to fit smaller window
+        self.log_box = ctk.CTkTextbox(self, width=600, height=150, font=("Consolas", 11))
+        self.log_box.pack(pady=5, padx=20)
         self.log("--- SYSTEM READY ---")
 
     # --- GUI FUNCTIONS ---
@@ -112,31 +109,38 @@ class MovieRecapApp(ctk.CTk):
         filename = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4 *.mkv")])
         if filename:
             self.movie_path = filename
-            self.movie_label.configure(text=f"🎥 {os.path.basename(filename)}", text_color="white")
+            self.movie_label.configure(text=f"🎥 {os.path.basename(filename)[:25]}...", text_color="white")
             self.log(f"[USER] Selected Movie: {os.path.basename(filename)}")
 
-    # def select_sub_file(self):
-    #     filename = filedialog.askopenfilename(filetypes=[("Subtitle Files", "*.srt")])
-    #     if filename:
-    #         self.sub_path = filename
-    #         self.sub_label.configure(text=f"📄 {os.path.basename(filename)}", text_color="white")
-    #         self.log(f"[USER] Selected Subs: {os.path.basename(filename)}")
+    def select_srt_file(self):
+        filename = filedialog.askopenfilename(filetypes=[("Subtitle Files", "*.srt")])
+        if filename:
+            self.srt_path = filename
+            self.srt_label.configure(text=f"📜 {os.path.basename(filename)[:25]}...", text_color="white")
+            self.log(f"[USER] Selected Subtitle: {os.path.basename(filename)}")
 
-        def start_process(self):
-         if not self.movie_path: # <--- MODIFIED: Only checks for movie now
-            self.log("❌ ERROR: Please select a Movie file.")
+   # language change function that updates voice options based on selected language
+    def change_language(self, choice):
+        if choice == "Urdu":
+            self.voice_combo.configure(values=["ur-PK-AsadNeural", "ur-PK-UzmaNeural"])
+            self.voice_combo.set("ur-PK-AsadNeural")
+            self.log("🌐 Switched to Urdu AI Voices.")
+        else:
+            self.voice_combo.configure(values=["en-US-ChristopherNeural", "en-US-EricNeural", "en-US-AnaNeural"])
+            self.voice_combo.set("en-US-ChristopherNeural")
+            self.log("🌐 Switched to English AI Voices.")
+
+    def start_process(self):
+        if not self.movie_path or not self.srt_path:
+            self.log("❌ ERROR: Please select BOTH a Movie file and an .srt file.")
             return
-        
-        if self.is_running:
-            return
-        
-        # ... (Rest of the function is the same)
+        if self.is_running: return
+
         self.is_running = True
         self.start_btn.configure(state="disabled", text="⏳ RENDERING...", fg_color="gray")
         self.status_label.configure(text="Processing...", text_color="#FFAA00")
         self.progress_bar.set(0)
         threading.Thread(target=self.run_engine_thread, daemon=True).start()
-
 
     def run_engine_thread(self):
         try:
@@ -152,274 +156,221 @@ class MovieRecapApp(ctk.CTk):
             self.is_running = False
             self.start_btn.configure(state="normal", text="🚀 START RENDER", fg_color="#2CC985")
 
-   # --- 🧠 THE ENGINE ---
+    # --- 🧠 THE ENGINE ---
     async def engine_logic(self):
-        # --- SETTINGS ---
-        PREVIEW_MODE = False
-        # CHUNK_SIZE = 60  
-        MAX_WORDS = 8      
+        PREVIEW_MODE = False  # Set to True to only process first 2 chapters for quick testing
+        MAX_WORDS = 8          
         
         MOVIE_FILE = self.movie_path
-        # SUBTITLE_FILE = self.sub_path # <--- REMOVED
+        SRT_FILE = self.srt_path
         GENRE = self.genre_combo.get()
         VOICE = self.voice_combo.get()
-        OUTPUT_FILE = os.path.join(os.path.dirname(MOVIE_FILE), f"Recap_{GENRE}_{os.path.basename(MOVIE_FILE)}")
-        SCRIPT_LOG = os.path.join(os.path.dirname(MOVIE_FILE), "script_log.txt")
+        TARGET_LANG = self.lang_combo.get()
+        OUTPUT_FILE = os.path.join(os.path.dirname(MOVIE_FILE), f"Recap_{TARGET_LANG}_{os.path.basename(MOVIE_FILE)}")
+        SCRIPT_LOG = os.path.join(os.path.dirname(MOVIE_FILE), f"script_log_{TARGET_LANG}.txt")
 
-        # ... (Music Check and Clean AI functions are the same)
-        genre_map = {
-            "action": "action.mp3", "horror": "horror.mp3", "romantic": "romantic.mp3",
-            "sad": "sad.mp3", "sci-fi": "sci-fi.mp3", "thriller": "thriller.mp3"
-        }
-        script_folder = os.path.dirname(os.path.abspath(__file__))
+        # 🎵 MUSIC CHECK
+        genre_map = {"action": "action.mp3", "horror": "horror.mp3", "romantic": "romantic.mp3", "sad": "sad.mp3", "sci-fi": "sci-fi.mp3", "thriller": "thriller.mp3"}
         music_filename = genre_map.get(GENRE, "thriller.mp3") 
-        BGM_FILE = os.path.join(script_folder, "music", music_filename)
-        if not os.path.exists(BGM_FILE):
-             BGM_FILE = os.path.join(os.path.dirname(MOVIE_FILE), "music", music_filename)
-        self.log(f"--- 🎬 STARTING RENDER ---")
-        if os.path.exists(BGM_FILE): self.log(f"✅ Music Found: {os.path.basename(BGM_FILE)}")
-        else: self.log(f"❌ MUSIC MISSING!")
+        BGM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music", music_filename)
+        if not os.path.exists(BGM_FILE): BGM_FILE = os.path.join(os.path.dirname(MOVIE_FILE), "music", music_filename)
+
+        self.log(f"--- 🎬 STARTING {TARGET_LANG.upper()} RENDER ---")
 
         def clean_ai(text):
-             # ... (this function is unchanged)
-             text = re.sub(r'\(.*?\)', '', text)
-             text = re.sub(r'\[.*?\]', '', text)
-             sentences = text.replace("!", ".").replace("?", ".").split(".")
-             clean_sentences = []
-             banned_starts = ["i will", "i can", "i am", "sure", "here is", "happy to", "in this scene", "the scene depicts", "please provide", "certainly", "okay", "context", "atmosphere", "however", "additionally", "as an ai", "let me", "hope this"]
-             for s in sentences:
-                 s_clean = s.strip()
-                 s_lower = s_clean.lower()
-                 if len(s_clean) < 3: continue
-                 is_banned = False
-                 for bad in banned_starts:
-                     if s_lower.startswith(bad):
-                         is_banned = True
-                         break
-                 if "narration" in s_lower or "chatbot" in s_lower: is_banned = True
-                 if not is_banned: clean_sentences.append(s_clean)
-             return ". ".join(clean_sentences) + "."
+            text = re.sub(r'\(.*?\)', '', text)
+            text = re.sub(r'\[.*?\]', '', text)
+            sentences = text.replace("!", ".").replace("?", ".").split(".")
+            clean_sentences = []
+            banned_starts = ["i will", "i can", "i am", "sure", "here is", "happy to", "in this scene", "the scene depicts", "please provide", "certainly", "okay", "context"]
+            for s in sentences:
+                s_clean = s.strip()
+                s_lower = s_clean.lower()
+                if len(s_clean) < 3: continue
+                is_banned = any(s_lower.startswith(bad) for bad in banned_starts)
+                if "narration" in s_lower or "chatbot" in s_lower: is_banned = True
+                if not is_banned: clean_sentences.append(s_clean)
+            return ". ".join(clean_sentences) + "."
 
         def strict_split(text):
-             # ... (this function is unchanged)
-             text = text.replace("?", ".").replace("!", ".").replace(";", ".")
-             raw_sentences = [s.strip() for s in text.split(".") if s.strip()]
-             final_sentences = []
-             for sent in raw_sentences:
-                 words = sent.split()
-                 if len(words) <= MAX_WORDS:
-                     final_sentences.append(sent)
-                 else:
-                     for i in range(0, len(words), MAX_WORDS):
-                         chunk = " ".join(words[i:i+MAX_WORDS])
-                         final_sentences.append(chunk)
-             return final_sentences
+            text = text.replace("?", ".").replace("!", ".").replace(";", ".")
+            raw_sentences = [s.strip() for s in text.split(".") if s.strip()]
+            final_sentences = []
+            for sent in raw_sentences:
+                words = sent.split()
+                if len(words) <= MAX_WORDS:
+                    final_sentences.append(sent)
+                else:
+                    for i in range(0, len(words), MAX_WORDS):
+                        final_sentences.append(" ".join(words[i:i+MAX_WORDS]))
+            return final_sentences
 
-        # --- 🛡️ AUTO-RETRY VOICE ---
         async def gen_voice(txt, fn):
-            # ... (this function is unchanged)
-            MAX_RETRIES = 5
-            for attempt in range(MAX_RETRIES):
+            for _ in range(3):
                 try:
                     await edge_tts.Communicate(txt, VOICE, volume="+10%", rate="+5%").save(fn)
                     return
-                except Exception as e:
-                    self.log(f"   ⚠️ Connection Failed. Retrying in 3s...")
-                    time.sleep(3)
-            
-            self.log("   ❌ INTERNET DEAD. Silent Clip.")
-            silent_clip = AudioArrayClip(np.zeros((44100, 2)), fps=44100).with_duration(3)
-            silent_clip.write_audiofile(fn)
+                except: time.sleep(2)
+            AudioArrayClip(np.zeros((44100, 2)), fps=44100).with_duration(3).write_audiofile(fn, logger=None)
 
-        # --- NEW WHISPER FUNCTION ---
-        def get_dialogue(transcription, start_sec, end_sec):
-            segments = transcription.get('segments', [])
-            dialogue = []
-            for seg in segments:
-                # Check if the segment overlaps with the given time range
-                if seg['start'] < end_sec and seg['end'] > start_sec:
-                    dialogue.append(seg['text'])
-            return " ".join(dialogue).strip()
+        def get_subs(subs_list, s, e):
+            return " ".join([sub['text'] for sub in subs_list if s <= sub['start'] < e])[:4000]
 
-        # ... (draw_sub function is unchanged)
         def draw_sub(text, dur, w, h):
             img = Image.new('RGBA', (w, h), (0,0,0,0))
             draw = ImageDraw.Draw(img)
-            try: font = ImageFont.truetype("arial.ttf", 24)
+            font_name = "nirmalaui.ttf" if TARGET_LANG == "Urdu" else "arial.ttf"
+            try: font = ImageFont.truetype(font_name, 24)
             except: font = ImageFont.load_default()
-            bbox = draw.textbbox((w/2, h-60), text, font=font, anchor="ms")
-            draw.rectangle((bbox[0]-10, bbox[1]-5, bbox[2]+10, bbox[3]+5), fill=(0,0,0,200))
-            draw.text((w/2, h-60), text, font=font, fill="#FFD700", anchor="ms", align="center")
-            return ImageClip(np.array(img)).set_duration(dur)
-        
-         # --- 1. WHISPER TRANSCRIPTION ---
-        self.log("👂 Whisper is listening... (This may take a while.)")
-        self.status_label.configure(text="Whisper is Transcribing...")
-        self.progress_bar.set(0) # Show some activity
-        
-        transcription = {}
-        try:
-            model = whisper.load_model("base") # "base" is fast. Use "small" or "medium" for higher accuracy.
-            transcription = model.transcribe(MOVIE_FILE, fp16=False)
-            self.log("✅ Whisper finished transcription.")
-        except Exception as e:
-            self.log(f"❌ WHISPER FAILED: {e}")
-            self.log("   Make sure you have ffmpeg installed and in your system's PATH.")
-            return
-        
-        ### --- STEP 2: SCENE DETECTION (The Eyes) --- ###
-        self.status_label.configure(text="Phase 2/3: Detecting Scenes...")
-        def find_scenes(video_path, threshold=27.0):
-            video = open_video(video_path)
-            scene_manager = SceneManager()
-            scene_manager.add_detector(ContentDetector(threshold=threshold))
-            self.log("🔎 Finding scene cuts...")
-            scene_manager.detect_scenes(video=video, show_progress=False)
-            scenes = scene_manager.get_scene_list()
-            self.log(f"✅ Found {len(scenes)} scenes.")
-            return scenes
-        
-        try:
-            scenes = find_scenes(MOVIE_FILE)
-            if not scenes:
-                self.log("❌ No scenes detected. Lower the 'threshold' in find_scenes.")
-                return
-        except Exception as e:
-            self.log(f"❌ PySceneDetect failed: {e}")
-            return
-        
-        ### --- STEP 3: RECAP GENERATION (The Brain) --- ###
-        self.status_label.configure(text="Phase 3/3: Generating Recap...")
-        part_files = []
-        audio_cleanup_list = []
-        total_scenes = len(scenes)
-
-        with open(SCRIPT_LOG, "w") as log_file:
-            log_file.write("--- SCENE-BASED SCRIPT LOG ---\n")
-
-        # The new, intelligent loop. No more CHUNK_SIZE.
-        for i, (start_time, end_time) in enumerate(scenes):
-            self.update_progress(i + 1, total_scenes, f"Processing Scene {i + 1}/{total_scenes}")
-
-            if PREVIEW_MODE and i >= 10: 
-                self.log("🛑 PREVIEW MODE: Stopping after 10 scenes.")
-                break
-
-            s_t = start_time.get_seconds()
-            e_t = end_time.get_seconds()
-            scene_duration = e_t - s_t
-
-            # Skip scenes that are too short to be meaningful
-            if scene_duration < 1.0:
-                continue
-
-            pf = f"part_{i:04d}.mp4"
-            part_files.append(pf)
-            if os.path.exists(pf):
-                self.log(f"⏩ Scene {i+1} exists. Skipping.")
-                continue
-            # 1. GET DIALOGUE FOR THE *EXACT* SCENE
-            scene_txt = get_dialogue(transcription, s_t, e_t)
-            if not scene_txt:
-                scene_txt = "(This scene is silent)"
-
-            # 2. GENERATE A SMARTER SCRIPT
-            prompt = (f"You are a movie trailer scriptwriter. Write one powerful narration line for this scene. "
-                      f"Output ONLY the narration. NO CHAT. "
-                      f"Style: {GENRE}. Scene Duration: {scene_duration:.1f}s. Dialogue: '{scene_txt[:1500]}'")
             
-            script = ""
+            bbox = draw.textbbox((0,0), text, font=font)
+            text_w, text_h = bbox[2]-bbox[0], bbox[3]-bbox[1]
+            x, y = (w - text_w) // 2, h - 60
+            draw.rectangle([x-10, y-5, x+text_w+10, y+text_h+5], fill=(0,0,0,230))
+            draw.text((x,y), text, font=font, fill="#FFD700", align="center")
+            return ImageClip(np.array(img)).with_duration(dur)
+
+        part_files, audio_cleanup_list = [], []
+
+        self.update_progress(10, 100, "Reading Subtitles...")
+        self.log("⚡ Instantly mapping .srt file...")
+        
+        subs = []
+        try:
+            srt_data = pysrt.open(SRT_FILE)
+            for sub in srt_data:
+                start_sec = sub.start.ordinal / 1000.0
+                end_sec = sub.end.ordinal / 1000.0
+                text = sub.text.replace('\n', ' ')
+                subs.append({'start': start_sec, 'end': end_sec, 'text': text})
+            
+            mov_dur = subs[-1]['end'] if subs else 0
+            with VideoFileClip(MOVIE_FILE) as temp_vid:
+                if temp_vid.duration > mov_dur: mov_dur = temp_vid.duration
+            self.log(f"✅ Map Built! Movie is {mov_dur/60:.1f} mins.")
+        except Exception as e:
+            self.log(f"❌ Subtitle Error: {e}")
+            return
+
+        movie_mins = mov_dur / 60
+        target_recap_mins = 15 if movie_mins <= 80 else 18
+        num_chapters = target_recap_mins
+        chapter_length = mov_dur / num_chapters 
+        
+        self.log(f"🔪 Slicing into {num_chapters} chapters ({chapter_length/60:.1f} mins each).")
+
+        # --- INTRO ---
+        intro_f, intro_a = "part_intro.mp4", "intro.mp3"
+        part_files.append(intro_f)
+        audio_cleanup_list.append(intro_a)
+        if not os.path.exists(intro_f):
+            intro_text = "Here is the recap." if TARGET_LANG == "English" else "یہ فلم کی کہانی ہے۔"
+            await gen_voice(intro_text, intro_a)
+            aud = AudioFileClip(intro_a)
+            # new change 
+            with VideoFileClip(MOVIE_FILE) as v:
+                # Calculate the exact even width mathematically so we don't have to crop
+                calc_w = int(v.w * (480 / v.h))
+                calc_w -= (calc_w % 2) 
+                
+                cl = v.resized((calc_w, 480)).subclipped(0, aud.duration).without_audio()
+                sub = draw_sub(intro_text, aud.duration, cl.w, cl.h)
+                # 🛑 FIX 1
+                CompositeVideoClip([cl, sub]).with_audio(aud).write_videofile(intro_f, fps=24, codec="libx264", audio_codec="aac", ffmpeg_params=["-pix_fmt", "yuv420p"], preset="ultrafast", logger=None)
+
+        with open(SCRIPT_LOG, "w", encoding="utf-8") as log_file: log_file.write(f"--- SCRIPT LOG ---\n")
+        styles = ["Be intense.", "Be mysterious.", "Describe the action dramatically."]
+
+        for i in range(num_chapters):
+            self.update_progress(20 + int((i/num_chapters)*70), 100, f"Rendering Chapter {i+1}...")
+            
+            if PREVIEW_MODE and i >= 2: 
+                self.log("🛑 PREVIEW MODE: Stopping early.")
+                break 
+
+            s_t, e_t = i * chapter_length, (i + 1) * chapter_length
+            if s_t >= mov_dur: break
+
+            pf = f"part_{i:03d}.mp4"
+            part_files.append(pf)
+            if os.path.exists(pf): continue
+
+            self.log(f"🔄 AI Writing Chapter {i+1} in {TARGET_LANG}...")
+            scene_txt = get_subs(subs, s_t, e_t)
+            
+            prompt = (f"SYSTEM: You are an expert movie recapper. Summarize this specific chapter of the movie. "
+                      f"OUTPUT EXACTLY 6 SENTENCES IN {TARGET_LANG.upper()}. No more, no less. "
+                      f"If {TARGET_LANG.upper()} is URDU, YOU MUST USE THE NATIVE URDU SCRIPT (Perso-Arabic: اردو). DO NOT USE ROMAN URDU OR HINDI SCRIPT. "
+                      f"Focus on the main plot points, action, and dialogue. "
+                      f"DO NOT USE PREAMBLE. JUST THE STORY. "
+                      f"Style: {random.choice(styles)}. Context from this chapter: {scene_txt}")
+            
             try:
                 resp = ollama.chat(model='llama3.2', messages=[{'role':'user','content':prompt}])
                 script = clean_ai(resp['message']['content'])
-            except Exception as e:
-                script = "In a world of silence..." # Better fallback
+            except: script = "The characters navigate the unfolding events in silence." if TARGET_LANG == "English" else "کردار خاموشی سے آگے بڑھتے ہیں۔"
 
-            if not script or len(script) < 5:
-                script = "The story unfolds."
+            with open(SCRIPT_LOG, "a", encoding="utf-8") as log_file: log_file.write(f"\nChapter {i+1}: {script}\n")
 
-            log_file.write(f"\nScene {i+1} ({s_t:.2f}s - {e_t:.2f}s): {script}\n")
+            full_audio_path = f"aud_{i}_full.mp3"
+            audio_cleanup_list.append(full_audio_path) 
+            await gen_voice(script, full_audio_path)
+            full_aud_clip = AudioFileClip(full_audio_path)
 
-            # 3. GENERATE AUDIO & VISUALS
-            audio_path = f"aud_{i:04d}.mp3"
-            audio_cleanup_list.append(audio_path)
-            await gen_voice(script, audio_path)
-            audio_clip = AudioFileClip(audio_path)
-
-            # THIS IS THE VISUAL ALIGNMENT. NO MORE RANDOM CLIPS.
-            # We take the *entire* detected scene.
-            with VideoFileClip(MOVIE_FILE) as v:
-                visual_clip = v.subclip(s_t, e_t).without_audio().resized(height=480)
-
-            # 4. CREATE SUBTITLES AND MERGE
             sentences = strict_split(script)
             if not sentences: sentences = ["..."]
+            clip_duration = full_aud_clip.duration / len(sentences)
+            clips = []
 
-            sub_clips = []
-            time_per_sentence = audio_clip.duration / len(sentences)
-            for j, sent in enumerate(sentences):
-                sub_clip = draw_sub(sent, time_per_sentence, visual_clip.w, visual_clip.h)
-                sub_clip = sub_clip.set_start(j * time_per_sentence)
-                sub_clips.append(sub_clip)
+            v_source = VideoFileClip(MOVIE_FILE)
+            calc_w = int(v_source.w * (480 / v_source.h))
+            calc_w -= (calc_w % 2)
+            v_source = v_source.resized((calc_w, 480))
+            
+            # --- CHRONOLOGICAL SLICING FIX ---
+            chunk_length = (e_t - s_t) / len(sentences) # Divide chapter into equal forward-moving chunks
+            
+            for idx, sent in enumerate(sentences):
+                # Base time moves forward with each sentence so scenes never loop backwards
+                base_time = s_t + (idx * chunk_length) 
+                safe_end = max(base_time + 0.1, base_time + chunk_length - clip_duration)
+                
+                start_vis = random.uniform(base_time, safe_end)
+                vc = v_source.subclipped(start_vis, start_vis+clip_duration).without_audio()
+                sc = draw_sub(sent, clip_duration, vc.w, vc.h)
+                clips.append(CompositeVideoClip([vc, sc]))
+                
+            v_source.close()
+            
+            
+            
+            visual_track = concatenate_videoclips(clips)
+            final_part = visual_track.with_audio(full_aud_clip)
+            # 🛑 FIX 2: ADDED libx264 and aac CODECS HERE
+            # Fix part render
+            final_part.write_videofile(pf, fps=24, codec="libx264", audio_codec="aac", ffmpeg_params=["-pix_fmt", "yuv420p"], preset="ultrafast", threads=4, logger=None)
 
-            # Composite the scene, subtitles, and narration
-            final_part = CompositeVideoClip([visual_clip] + sub_clips)
-            final_part = final_part.set_duration(audio_clip.duration) # Sync duration to the narration
-            final_part = final_part.set_audio(audio_clip)
-
-            # Write the scene to a file
-            final_part.write_videofile(pf, fps=24, preset="ultrafast", threads=4, logger=None)
-
-            # Memory Cleanup
-            del final_part, visual_clip, audio_clip, sub_clips
+            del final_part, visual_track, full_aud_clip, clips
             gc.collect()
 
-
-        # --- FINAL STITCH ---
-        self.log("💿 Stitching final video...")
-        self.status_label.configure(text="Finalizing...")
-
-        valid_clips = [VideoFileClip(f) for f in part_files if os.path.exists(f) and os.path.getsize(f) > 1000]
-
-        if not valid_clips:
-            self.log("❌ No valid scene clips were generated. Aborting.")
-            return
-
-        # We can add the intro here if we want one. For now, let's keep it clean.
-        full_movie = concatenate_videoclips(valid_clips)
-
-        if os.path.exists(BGM_FILE):
-            self.log("🎵 Adding background music...")
-            # Use volumex for safer volume scaling and audio_loop for cleaner looping
-            from moviepy.audio.fx import all as afx
-            bgm = AudioFileClip(BGM_FILE)
-            full_bgm = afx.audio_loop(bgm, duration=full_movie.duration).fx(afx.volumex, 0.25)
-            final_audio = CompositeAudioClip([full_movie.audio, full_bgm])
-            full_movie.audio = final_audio
-
-        # Use a better preset for the final render quality. "medium" is a good balance.
-        full_movie.write_videofile(OUTPUT_FILE, fps=24, preset="medium", threads=8)
-        
-        self.log(f"✅ SUCCESS! Saved to {OUTPUT_FILE}")
-        
-        self.log("🧹 Cleaning up temp files...")
-        # Proper cleanup
-        full_movie.close()
-        for clip in valid_clips:
-            clip.close()
-        bgm.close() # Close the music file handle too
+        self.update_progress(99, 100, "Stitching Final Video...")
+        valids = [VideoFileClip(f) for f in part_files if os.path.exists(f)]
+        if valids:
+            full_movie = concatenate_videoclips(valids)
+            if os.path.exists(BGM_FILE):
+                bgm = AudioFileClip(BGM_FILE)
+                num_loops = int(full_movie.duration // bgm.duration) + 2
+                bgm = concatenate_audioclips([bgm] * num_loops).with_duration(full_movie.duration).with_volume_scaled(0.30)
+                full_movie = full_movie.with_audio(CompositeAudioClip([full_movie.audio, bgm]))
             
-        all_temp_files = part_files + audio_cleanup_list
-        for f in all_temp_files:
-            if os.path.exists(f):
-                try:
-                    os.remove(f)
-                except Exception as e:
-                    self.log(f"Could not delete temp file: {f}")
-        self.log("✨ All temporary files deleted.")
+            # 🛑 FIX 3: ADDED libx264 and aac CODECS HERE
+           # Fix final movie render
+            full_movie.write_videofile(OUTPUT_FILE, fps=24, codec="libx264", audio_codec="aac", ffmpeg_params=["-pix_fmt", "yuv420p"], preset="ultrafast", threads=4)
 
+            for f in part_files + audio_cleanup_list:
+                try: os.remove(f)
+                except: pass
 
 if __name__ == "__main__":
-    print("--- 🚀 LAUNCHING APP... ---")
     app = MovieRecapApp()
     app.mainloop()
