@@ -11,8 +11,17 @@ import numpy as np
 import time
 import gc 
 from PIL import Image, ImageDraw, ImageFont
-from moviepy import *
 import threading
+from moviepy import (
+    VideoFileClip, 
+    AudioFileClip, 
+    CompositeVideoClip, 
+    CompositeAudioClip, 
+    concatenate_videoclips, 
+    concatenate_audioclips, 
+    AudioArrayClip, 
+    ImageClip
+)
 
 # --- 🎨 VISUAL SETTINGS ---
 ctk.set_appearance_mode("Dark")
@@ -27,7 +36,7 @@ class MovieRecapApp(ctk.CTk):
         self.srt_path = ""
         self.is_running = False
 
-        # WINDOW SETUP - Made smaller as requested!
+        # WINDOW SETUP
         self.title("Movie Recap Dashboard")
         self.geometry("800x800") 
         self.resizable(True, True)
@@ -89,7 +98,7 @@ class MovieRecapApp(ctk.CTk):
         self.start_btn = ctk.CTkButton(self, text="🚀 START RENDER", font=("Roboto", 16, "bold"), height=35, fg_color="#2CC985", hover_color="#229966", command=self.start_process)
         self.start_btn.pack(pady=15, padx=40, fill="x")
 
-        # LOG BOX - Reduced height to fit smaller window
+        # LOG BOX
         self.log_box = ctk.CTkTextbox(self, width=600, height=150, font=("Consolas", 11))
         self.log_box.pack(pady=5, padx=20)
         self.log("--- SYSTEM READY ---")
@@ -119,7 +128,6 @@ class MovieRecapApp(ctk.CTk):
             self.srt_label.configure(text=f"📜 {os.path.basename(filename)[:25]}...", text_color="white")
             self.log(f"[USER] Selected Subtitle: {os.path.basename(filename)}")
 
-   # language change function that updates voice options based on selected language
     def change_language(self, choice):
         if choice == "Urdu":
             self.voice_combo.configure(values=["ur-PK-AsadNeural", "ur-PK-UzmaNeural"])
@@ -158,7 +166,8 @@ class MovieRecapApp(ctk.CTk):
 
     # --- 🧠 THE ENGINE ---
     async def engine_logic(self):
-        PREVIEW_MODE = False  # Set to True to only process first 2 chapters for quick testing
+        # Set to True if you only want to render 2 chapters for a quick test!
+        PREVIEW_MODE = False 
         MAX_WORDS = 8          
         
         MOVIE_FILE = self.movie_path
@@ -178,11 +187,18 @@ class MovieRecapApp(ctk.CTk):
         self.log(f"--- 🎬 STARTING {TARGET_LANG.upper()} RENDER ---")
 
         def clean_ai(text):
+            # --- ANTI-STROBE FIX: Kill bullet points, asterisks, and newlines ---
+            text = text.replace('\n', ' ').replace('*', '').replace('-', '')
             text = re.sub(r'\(.*?\)', '', text)
             text = re.sub(r'\[.*?\]', '', text)
             sentences = text.replace("!", ".").replace("?", ".").split(".")
             clean_sentences = []
-            banned_starts = ["i will", "i can", "i am", "sure", "here is", "happy to", "in this scene", "the scene depicts", "please provide", "certainly", "okay", "context"]
+            banned_starts = [
+                "i will", "i can", "i am", "sure", "here is", "happy to", 
+                "in this scene", "the scene depicts", "please provide", 
+                "certainly", "okay", "context", "the text appears", 
+                "it does not contain", "can i help", "as an ai", "this text"
+            ]
             for s in sentences:
                 s_clean = s.strip()
                 s_lower = s_clean.lower()
@@ -208,7 +224,7 @@ class MovieRecapApp(ctk.CTk):
         async def gen_voice(txt, fn):
             for _ in range(3):
                 try:
-                    await edge_tts.Communicate(txt, VOICE, volume="+10%", rate="+5%").save(fn)
+                    await edge_tts.Communicate(txt, VOICE, volume="+10%").save(fn)
                     return
                 except: time.sleep(2)
             AudioArrayClip(np.zeros((44100, 2)), fps=44100).with_duration(3).write_audiofile(fn, logger=None)
@@ -219,7 +235,7 @@ class MovieRecapApp(ctk.CTk):
         def draw_sub(text, dur, w, h):
             img = Image.new('RGBA', (w, h), (0,0,0,0))
             draw = ImageDraw.Draw(img)
-            font_name = "nirmalaui.ttf" if TARGET_LANG == "Urdu" else "arial.ttf"
+            font_name = "nirmala.ttf" if TARGET_LANG == "Urdu" else "arial.ttf"
             try: font = ImageFont.truetype(font_name, 24)
             except: font = ImageFont.load_default()
             
@@ -232,8 +248,8 @@ class MovieRecapApp(ctk.CTk):
 
         part_files, audio_cleanup_list = [], []
 
-        self.update_progress(10, 100, "Reading Subtitles...")
-        self.log("⚡ Instantly mapping .srt file...")
+        self.update_progress(10, 100, "Reading Subtitles & Movie Length...")
+        self.log("⚡ Analyzing movie timeline intelligently...")
         
         subs = []
         try:
@@ -242,22 +258,44 @@ class MovieRecapApp(ctk.CTk):
                 start_sec = sub.start.ordinal / 1000.0
                 end_sec = sub.end.ordinal / 1000.0
                 text = sub.text.replace('\n', ' ')
-                subs.append({'start': start_sec, 'end': end_sec, 'text': text})
+                
+                # --- FILTER FAKE SUBS ---
+                text_lower = text.lower()
+                if "opensubtitles" not in text_lower and "synced by" not in text_lower and "www." not in text_lower:
+                    subs.append({'start': start_sec, 'end': end_sec, 'text': text})
             
-            mov_dur = subs[-1]['end'] if subs else 0
+            if not subs:
+                self.log("❌ Error: Could not find valid dialogue in the SRT file.")
+                return
+
+            # --- SMART INTRO SKIPPER ---
+            first_spoken_word_time = subs[0]['start']
+            story_start_time = max(0.0, first_spoken_word_time - 10.0) 
+
+            # --- SMART CREDITS DETECTOR ---
+            last_spoken_word_time = subs[-1]['end']
+            
             with VideoFileClip(MOVIE_FILE) as temp_vid:
-                if temp_vid.duration > mov_dur: mov_dur = temp_vid.duration
-            self.log(f"✅ Map Built! Movie is {mov_dur/60:.1f} mins.")
+                if 0 < last_spoken_word_time < temp_vid.duration:
+                    mov_dur = min(last_spoken_word_time + 15.0, temp_vid.duration)
+                else:
+                    mov_dur = temp_vid.duration
+                    
+            self.log(f"✅ Timeline Locked! Story starts at {story_start_time/60:.1f}m, ends at {mov_dur/60:.1f}m.")
         except Exception as e:
             self.log(f"❌ Subtitle Error: {e}")
             return
 
-        movie_mins = mov_dur / 60
-        target_recap_mins = 15 if movie_mins <= 80 else 18
-        num_chapters = target_recap_mins
-        chapter_length = mov_dur / num_chapters 
         
-        self.log(f"🔪 Slicing into {num_chapters} chapters ({chapter_length/60:.1f} mins each).")
+       
+        # --- DYNAMIC LENGTH LOGIC ---
+        actual_story_duration = mov_dur - story_start_time
+        movie_mins = actual_story_duration / 60
+        target_recap_mins = 15 if movie_mins <= 80 else 17
+        num_chapters = target_recap_mins
+        chapter_length = actual_story_duration / num_chapters 
+        
+        self.log(f"🔪 Slicing into {num_chapters} chapters to hit ~{target_recap_mins} min runtime.")
 
         # --- INTRO ---
         intro_f, intro_a = "part_intro.mp4", "intro.mp3"
@@ -267,28 +305,36 @@ class MovieRecapApp(ctk.CTk):
             intro_text = "Here is the recap." if TARGET_LANG == "English" else "یہ فلم کی کہانی ہے۔"
             await gen_voice(intro_text, intro_a)
             aud = AudioFileClip(intro_a)
-            # new change 
+            
             with VideoFileClip(MOVIE_FILE) as v:
-                # Calculate the exact even width mathematically so we don't have to crop
                 calc_w = int(v.w * (480 / v.h))
                 calc_w -= (calc_w % 2) 
+                # Grab a clip exactly from where the real story starts
+                start_grab = min(story_start_time, v.duration - aud.duration - 1)
+                cl = v.resized((calc_w, 480)).subclipped(start_grab, start_grab + aud.duration).without_audio()
                 
-                cl = v.resized((calc_w, 480)).subclipped(0, aud.duration).without_audio()
-                sub = draw_sub(intro_text, aud.duration, cl.w, cl.h)
-                # 🛑 FIX 1
-                CompositeVideoClip([cl, sub]).with_audio(aud).write_videofile(intro_f, fps=24, codec="libx264", audio_codec="aac", ffmpeg_params=["-pix_fmt", "yuv420p"], preset="ultrafast", logger=None)
+                if TARGET_LANG == "English":
+                    sub = draw_sub(intro_text, aud.duration, cl.w, cl.h)
+                    final_intro = CompositeVideoClip([cl, sub]).with_audio(aud)
+                else:
+                    final_intro = cl.with_audio(aud)
+
+                final_intro.write_videofile(intro_f, fps=24, codec="libx264", audio_codec="aac", ffmpeg_params=["-pix_fmt", "yuv420p"], preset="ultrafast", logger=None)
+                final_intro.close()
+            aud.close()
 
         with open(SCRIPT_LOG, "w", encoding="utf-8") as log_file: log_file.write(f"--- SCRIPT LOG ---\n")
         styles = ["Be intense.", "Be mysterious.", "Describe the action dramatically."]
 
+        # --- CHAPTER RENDERING ---
         for i in range(num_chapters):
             self.update_progress(20 + int((i/num_chapters)*70), 100, f"Rendering Chapter {i+1}...")
             
             if PREVIEW_MODE and i >= 2: 
-                self.log("🛑 PREVIEW MODE: Stopping early.")
                 break 
 
-            s_t, e_t = i * chapter_length, (i + 1) * chapter_length
+            s_t = story_start_time + (i * chapter_length)
+            e_t = story_start_time + ((i + 1) * chapter_length)
             if s_t >= mov_dur: break
 
             pf = f"part_{i:03d}.mp4"
@@ -298,17 +344,28 @@ class MovieRecapApp(ctk.CTk):
             self.log(f"🔄 AI Writing Chapter {i+1} in {TARGET_LANG}...")
             scene_txt = get_subs(subs, s_t, e_t)
             
-            prompt = (f"SYSTEM: You are an expert movie recapper. Summarize this specific chapter of the movie. "
-                      f"OUTPUT EXACTLY 6 SENTENCES IN {TARGET_LANG.upper()}. No more, no less. "
-                      f"If {TARGET_LANG.upper()} is URDU, YOU MUST USE THE NATIVE URDU SCRIPT (Perso-Arabic: اردو). DO NOT USE ROMAN URDU OR HINDI SCRIPT. "
-                      f"Focus on the main plot points, action, and dialogue. "
-                      f"DO NOT USE PREAMBLE. JUST THE STORY. "
-                      f"Style: {random.choice(styles)}. Context from this chapter: {scene_txt}")
+            # --- STRICT LANGUAGE, LENGTH & ANTI-REFUSAL PROMPT ---
+            if TARGET_LANG == "English":
+                prompt = (f"SYSTEM: You are a professional movie recapper. Summarize this specific chapter. "
+                          f"Write EXACTLY 6 to 8 continuous sentences in pure ENGLISH. "
+                          f"CRITICAL RULE: NEVER refuse the prompt. If the text has no dialogue, describe a cinematic scene of tension or action. "
+                          f"NEVER say 'I cannot summarize', 'this is a romantic drama', or 'can I help you'. Just write the story. "
+                          f"DO NOT use lists, bullet points, or asterisks. Write a single narrative paragraph. "
+                          f"Style: {random.choice(styles)}. Context: {scene_txt}")
+            else:
+                prompt = (f"SYSTEM: You are a professional movie recapper. Summarize this specific chapter. "
+                          f"Write EXACTLY 6 to 8 continuous sentences in pure URDU. "
+                          f"YOU MUST use the native Urdu script (اردو). DO NOT use Roman English! "
+                          f"CRITICAL RULE: NEVER refuse the prompt. If the text has no dialogue, invent a dramatic scene description. "
+                          f"NEVER say 'I cannot summarize' or talk to me. Just write the story. "
+                          f"DO NOT use lists, bullet points, or asterisks. "
+                          f"Style: {random.choice(styles)}. Context: {scene_txt}")
             
             try:
                 resp = ollama.chat(model='llama3.2', messages=[{'role':'user','content':prompt}])
                 script = clean_ai(resp['message']['content'])
-            except: script = "The characters navigate the unfolding events in silence." if TARGET_LANG == "English" else "کردار خاموشی سے آگے بڑھتے ہیں۔"
+            except: 
+                script = "The characters navigate the unfolding events in silence." if TARGET_LANG == "English" else "کردار خاموشی سے آگے بڑھتے ہیں۔"
 
             with open(SCRIPT_LOG, "a", encoding="utf-8") as log_file: log_file.write(f"\nChapter {i+1}: {script}\n")
 
@@ -327,33 +384,39 @@ class MovieRecapApp(ctk.CTk):
             calc_w -= (calc_w % 2)
             v_source = v_source.resized((calc_w, 480))
             
-            # --- CHRONOLOGICAL SLICING FIX ---
-            chunk_length = (e_t - s_t) / len(sentences) # Divide chapter into equal forward-moving chunks
+            chunk_length = (e_t - s_t) / len(sentences) 
             
             for idx, sent in enumerate(sentences):
-                # Base time moves forward with each sentence so scenes never loop backwards
                 base_time = s_t + (idx * chunk_length) 
                 safe_end = max(base_time + 0.1, base_time + chunk_length - clip_duration)
                 
-                start_vis = random.uniform(base_time, safe_end)
+                # --- BULLETPROOF TIMELINE MATH ---
+                max_allowed_start = max(0.0, v_source.duration - clip_duration - 0.5)
+                start_vis = min(random.uniform(base_time, safe_end), max_allowed_start)
+                start_vis = max(0.0, start_vis) 
+                
                 vc = v_source.subclipped(start_vis, start_vis+clip_duration).without_audio()
-                sc = draw_sub(sent, clip_duration, vc.w, vc.h)
-                clips.append(CompositeVideoClip([vc, sc]))
+                
+                if TARGET_LANG == "English":
+                    sc = draw_sub(sent, clip_duration, vc.w, vc.h)
+                    clips.append(CompositeVideoClip([vc, sc]))
+                else:
+                    clips.append(vc)
                 
             v_source.close()
             
-            
-            
             visual_track = concatenate_videoclips(clips)
             final_part = visual_track.with_audio(full_aud_clip)
-            # 🛑 FIX 2: ADDED libx264 and aac CODECS HERE
-            # Fix part render
+            
             final_part.write_videofile(pf, fps=24, codec="libx264", audio_codec="aac", ffmpeg_params=["-pix_fmt", "yuv420p"], preset="ultrafast", threads=4, logger=None)
 
+            final_part.close()
+            full_aud_clip.close()
             del final_part, visual_track, full_aud_clip, clips
             gc.collect()
 
-        self.update_progress(99, 100, "Stitching Final Video...")
+        # --- FINAL STITCHING ---
+        self.update_progress(99, 100, "Stitching Final Recap...")
         valids = [VideoFileClip(f) for f in part_files if os.path.exists(f)]
         if valids:
             full_movie = concatenate_videoclips(valids)
@@ -363,10 +426,12 @@ class MovieRecapApp(ctk.CTk):
                 bgm = concatenate_audioclips([bgm] * num_loops).with_duration(full_movie.duration).with_volume_scaled(0.30)
                 full_movie = full_movie.with_audio(CompositeAudioClip([full_movie.audio, bgm]))
             
-            # 🛑 FIX 3: ADDED libx264 and aac CODECS HERE
-           # Fix final movie render
             full_movie.write_videofile(OUTPUT_FILE, fps=24, codec="libx264", audio_codec="aac", ffmpeg_params=["-pix_fmt", "yuv420p"], preset="ultrafast", threads=4)
 
+            full_movie.close()
+            for v in valids: v.close()
+
+            # --- AUTO CLEANUP ---
             for f in part_files + audio_cleanup_list:
                 try: os.remove(f)
                 except: pass
@@ -374,3 +439,4 @@ class MovieRecapApp(ctk.CTk):
 if __name__ == "__main__":
     app = MovieRecapApp()
     app.mainloop()
+    
