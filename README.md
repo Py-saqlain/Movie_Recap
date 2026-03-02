@@ -5,6 +5,6 @@
 
 ##  How It Works
 This tool uses Python to automatically edit full-length movies into short, viral-style summaries.
-* **MoviePy:** For video editing and audio mixing.
+* **Video RAG:** For video editing and audio mixing.
 * **Sumy (LSA):** To extract key dialogue and summarize the plot.
 * **Pillow:** To generate custom yellow subtitles.
